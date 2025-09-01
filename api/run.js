@@ -1,7 +1,7 @@
 // ===============================
 // PR朝刊 API（Slack/Markdown 両対応）
 // - /api/run                -> Markdown
-// - /api/run?format=slack  -> Slackにコピペ用（タイトルリンクのみ、省略なし）
+// - /api/run?format=slack  -> Slack用（URL非表示・タイトルリンクのみ）
 // ===============================
 
 // ---- 環境変数 ----
@@ -118,12 +118,13 @@ function toSlackText(items){
     const when  = it.pubDate ? fmtJST(new Date(it.pubDate)) : '';
     const title = escapeSlack(it.title).replace(/\n/g,' ');
     const media = escapeSlack(it.media || 'News');
-    const link  = `<${it.link}|${title}>`; // Slackリンク表記
-    return `• ${link}（${media}）\n   └ ${escapeSlack(it.impact || '')} _(${when})_`;
+    const link  = `<${it.link}|${title}>`; // Slackのリンク表記
+    // 2行目はインデントなしで ↳ をつける（コード扱いされないように）
+    return `• ${link}（${media}）\n↳ ${escapeSlack(it.impact || '')} _(${when})_`;
   });
-  // コードブロックは使わない → Slackがリンクを展開してくれる
   return [header, ...lines].join('\n');
 }
+
 function toMarkdown(items){
   const lines = [
     `# PR朝刊（営業DX/AI/Enablement）${mdHeaderDate()}`,
