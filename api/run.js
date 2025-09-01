@@ -186,3 +186,32 @@ export default async function handler(req, res){
     res.status(500).send('Internal Error');
   }
 }
+// ---- 出力 ----
+function toJSON(items){
+  return items.map(it => ({
+    title: it.title,
+    link: it.link,
+    media: it.media,
+    impact: it.impact,
+    pubDate: it.pubDate
+  }));
+}
+
+export default async function handler(req, res){
+  try {
+    // ...（既存の処理はそのまま）
+
+    const useSlack = typeof req?.url === 'string' && req.url.includes('format=slack');
+    const useJson  = typeof req?.url === 'string' && req.url.includes('format=json');
+
+    let body;
+    if (useSlack) body = toSlackText(ranked);
+    else if (useJson) body = JSON.stringify(toJSON(ranked));
+    else body = toMarkdown(ranked);
+
+    res.setHeader('Content-Type', useJson ? 'application/json' : 'text/plain; charset=utf-8');
+    res.status(200).send(body);
+  } catch (e) {
+    res.status(500).send('Internal Error');
+  }
+}
