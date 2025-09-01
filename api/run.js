@@ -1,18 +1,17 @@
 // ===============================
 // PR朝刊 API（Slack/Markdown 両対応）
 // - /api/run                -> Markdown
-// - /api/run?format=slack  -> Slackにコピペ用（1メッセージでまとまる）
-// 予約語回避のため環境変数は APP_ プレフィックスを使用
+// - /api/run?format=slack  -> Slackにコピペ用（タイトルリンクのみ、省略なし）
 // ===============================
 
 // ---- 環境変数 ----
 const env = (k, d = '') => (process.env[k] ?? d);
-const OPENAI_API_KEY = env('OPENAI_API_KEY', '');           // あればAI考察、無ければ定型文にフォールバック
+const OPENAI_API_KEY = env('OPENAI_API_KEY', '');
 const APP_MAX_ITEMS  = parseInt(env('APP_MAX_ITEMS', '10'), 10);
 const APP_TZ         = env('APP_TZ', 'Asia/Tokyo');
 const APP_KEYWORDS   = env('APP_KEYWORDS', 'SALESCORE').split(',').map(s=>s.trim()).filter(Boolean);
 const APP_RSS_URLS   = env('APP_RSS_URLS', '').split('\n').map(s=>s.trim()).filter(Boolean);
-const SLACK_WEBHOOK  = env('APP_SLACK_WEBHOOK_URL', '');    // 任意：自動投稿したいとき
+const SLACK_WEBHOOK  = env('APP_SLACK_WEBHOOK_URL', '');
 
 const TRUSTED = /(日経|日本経済新聞|ITmedia|東洋経済|ダイヤモンド|Forbes|MarkeZine|SalesZine|PR TIMES)/i;
 
@@ -32,7 +31,7 @@ function normalizeTitle(t=''){ return t.replace(/\s+/g,'').replace(/[【】「�
 function parseDateAny(s){ if(!s) return null; const d=new Date(s); return isNaN(+d)?null:d; }
 function fmtJST(d){ const y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,'0'), da=String(d.getDate()).padStart(2,'0'), H=String(d.getHours()).padStart(2,'0'), M=String(d.getMinutes()).padStart(2,'0'); return `${y}/${m}/${da} ${H}:${M}`; }
 function mdHeaderDate(){ const {start}=jstYesterdayRange(); const y=start.getFullYear(), m=String(start.getMonth()+1).padStart(2,'0'), d=String(start.getDate()).padStart(2,'0'); return `${y}/${m}/${d}`; }
-function truncate(s = '', n = 32) { return s.length > n ? s.slice(0, n - 1) + '…' : s; }
+function truncate(s = '', n = 0) { if (n <= 0) return s; return s.length > n ? s.slice(0, n - 1) + '…' : s; }
 function escapeSlack(s = '') { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\|/g,'／'); }
 
 function detectMedia(hay='') {
@@ -47,13 +46,12 @@ function detectMedia(hay='') {
   return 'News';
 }
 
-// ---- RSS取得（軽量：RSS/Atomざっくり対応）----
+// ---- RSS取得 ----
 async function fetchRSS(url){
   const res = await fetch(url, { redirect:'follow' });
   const xml = await res.text();
   const items = [];
 
-  // RSS <item>
   const itemBlocks = xml.split(/<item[\s>]/i).slice(1).map(s=>'<item'+s.split('</item>')[0]+'</item>');
   for (const block of itemBlocks) {
     const g = (tag) => (block.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, 'i'))||[])[1]||'';
@@ -65,7 +63,6 @@ async function fetchRSS(url){
     if (title && link) items.push({ title, link, summary:desc, pubDate:pub, source:srcT });
   }
 
-  // Atom <entry>
   if (items.length === 0) {
     const entryBlocks = xml.split(/<entry[\s>]/i).slice(1).map(s=>'<entry'+s.split('</entry>')[0]+'</entry>');
     for (const block of entryBlocks) {
@@ -115,19 +112,17 @@ async function impactOneLiner(title, source, snippet){
   } catch { return ruleImpact(title); }
 }
 
-// ---- 出力（Slack/Markdown）----
+// ---- 出力 ----
 function toSlackText(items){
   const header = `📰 *【PR朝刊 / 営業DX・AI・Enablement】${mdHeaderDate()}*`;
   const lines = items.map(it => {
     const when  = it.pubDate ? fmtJST(new Date(it.pubDate)) : '';
-    const title = truncate(escapeSlack(it.title), 32).replace(/\n/g,' ');
+    const title = truncate(escapeSlack(it.title), 0).replace(/\n/g,' '); // 0=省略なし
     const media = escapeSlack(it.media || 'News');
     const link  = `<${it.link}|${title}>`;
-    // 2行表示。最後はSlackで1メッセージにまとまるようコードブロックで返す
     return `• ${link}（${media}）\n   └ ${escapeSlack(it.impact || '')} _(${when})_`;
   });
-  // コードブロックで囲って丸ごとコピペOK（URLプレビューは出ません）
-  return [header, '```', ...lines, '```'].join('\n');
+  return [header, ...lines].join('\n');
 }
 function toMarkdown(items){
   const lines = [
@@ -143,13 +138,11 @@ function toMarkdown(items){
 // ---- メイン ----
 export default async function handler(req, res){
   try {
-    // 1) RSS収集
     const all = [];
     for (const url of APP_RSS_URLS) {
       try { all.push(...await fetchRSS(url)); } catch {}
     }
 
-    // 2) フィルタ（昨日・日本語・自社KW）
     const { start, end } = jstYesterdayRange();
     const filtered = all.filter(it => {
       const d = parseDateAny(it.pubDate);
@@ -159,14 +152,12 @@ export default async function handler(req, res){
       return APP_KEYWORDS.some(k => hay.includes(k.toLowerCase()));
     });
 
-    // 3) 重複除去
     const seen = new Set(); const uniq = [];
     for (const it of filtered) {
       const key = normalizeTitle(it.title);
       if (!seen.has(key)) { seen.add(key); uniq.push(it); }
     }
 
-    // 4) スコア & 上位抽出
     const ranked = uniq.map(it=>{
       let s=0; const hay=`${it.title} ${it.summary||''} ${it.link}`;
       APP_KEYWORDS.forEach(k=>{ if(hay.toLowerCase().includes(k.toLowerCase())) s+=2; });
@@ -176,17 +167,14 @@ export default async function handler(req, res){
       return { ...it, score:s };
     }).sort((a,b)=>b.score-a.score).slice(0, APP_MAX_ITEMS);
 
-    // 5) 一言＆媒体名
     for (const it of ranked) {
       it.media = detectMedia(`${it.title} ${it.source||''} ${it.link}`);
       it.impact = await impactOneLiner(it.title, it.media, (it.summary||'').slice(0,300));
     }
 
-    // 6) 出力
     const useSlack = typeof req?.url === 'string' && req.url.includes('format=slack');
     const body = useSlack ? toSlackText(ranked) : toMarkdown(ranked);
 
-    // 任意：Slack自動送信（/api/run を手で叩いたときだけ送る）
     if (!useSlack && SLACK_WEBHOOK && ranked.length){
       try { await fetch(SLACK_WEBHOOK,{ method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ text: toSlackText(ranked) }) }); } catch {}
     }
