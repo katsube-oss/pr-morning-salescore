@@ -1,18 +1,23 @@
-// ---------- 環境変数 ----------
+// ===============================
+// PR朝刊 API（Slack/Markdown 両対応）
+// - /api/run                -> Markdown
+// - /api/run?format=slack  -> Slackにコピペ用（1メッセージでまとまる）
+// 予約語回避のため環境変数は APP_ プレフィックスを使用
+// ===============================
+
+// ---- 環境変数 ----
 const env = (k, d = '') => (process.env[k] ?? d);
-const OPENAI_API_KEY = env('OPENAI_API_KEY', '');
+const OPENAI_API_KEY = env('OPENAI_API_KEY', '');           // あればAI考察、無ければ定型文にフォールバック
 const APP_MAX_ITEMS  = parseInt(env('APP_MAX_ITEMS', '10'), 10);
 const APP_TZ         = env('APP_TZ', 'Asia/Tokyo');
 const APP_KEYWORDS   = env('APP_KEYWORDS', 'SALESCORE').split(',').map(s=>s.trim()).filter(Boolean);
 const APP_RSS_URLS   = env('APP_RSS_URLS', '').split('\n').map(s=>s.trim()).filter(Boolean);
-const SLACK_WEBHOOK  = env('APP_SLACK_WEBHOOK_URL', '');
+const SLACK_WEBHOOK  = env('APP_SLACK_WEBHOOK_URL', '');    // 任意：自動投稿したいとき
 
 const TRUSTED = /(日経|日本経済新聞|ITmedia|東洋経済|ダイヤモンド|Forbes|MarkeZine|SalesZine|PR TIMES)/i;
 
-// ---------- ユーティリティ ----------
-function jstNow() {
-  return new Date(new Date().toLocaleString('en-US', { timeZone: APP_TZ }));
-}
+// ---- ユーティリティ ----
+function jstNow() { return new Date(new Date().toLocaleString('en-US', { timeZone: APP_TZ })); }
 function jstYesterdayRange() {
   const now = jstNow();
   const start = new Date(now);
@@ -27,7 +32,8 @@ function normalizeTitle(t=''){ return t.replace(/\s+/g,'').replace(/[【】「�
 function parseDateAny(s){ if(!s) return null; const d=new Date(s); return isNaN(+d)?null:d; }
 function fmtJST(d){ const y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,'0'), da=String(d.getDate()).padStart(2,'0'), H=String(d.getHours()).padStart(2,'0'), M=String(d.getMinutes()).padStart(2,'0'); return `${y}/${m}/${da} ${H}:${M}`; }
 function mdHeaderDate(){ const {start}=jstYesterdayRange(); const y=start.getFullYear(), m=String(start.getMonth()+1).padStart(2,'0'), d=String(start.getDate()).padStart(2,'0'); return `${y}/${m}/${d}`; }
-function truncate(s = '', n = 60) { return s.length > n ? s.slice(0, n - 1) + '…' : s; }
+function truncate(s = '', n = 32) { return s.length > n ? s.slice(0, n - 1) + '…' : s; }
+function escapeSlack(s = '') { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\|/g,'／'); }
 
 function detectMedia(hay='') {
   if (/itmedia/i.test(hay)) return 'ITmedia';
@@ -41,7 +47,7 @@ function detectMedia(hay='') {
   return 'News';
 }
 
-// ---------- RSS取得（軽量パーサ：RSS/Atomざっくり両対応） ----------
+// ---- RSS取得（軽量：RSS/Atomざっくり対応）----
 async function fetchRSS(url){
   const res = await fetch(url, { redirect:'follow' });
   const xml = await res.text();
@@ -76,7 +82,7 @@ async function fetchRSS(url){
   return items;
 }
 
-// ---------- 一言（AI or ルール） ----------
+// ---- 一言（AI or ルール）----
 function ruleImpact(title=''){
   if (/価格|料金|値上げ|値下げ/i.test(title)) return '価格交渉・ROI訴求の材料に';
   if (/生成AI|AI|人工知能/i.test(title)) return '入力ハードルと定着の議論に直結';
@@ -109,16 +115,19 @@ async function impactOneLiner(title, source, snippet){
   } catch { return ruleImpact(title); }
 }
 
-// ---------- 出力（Markdown / Slack） ----------
+// ---- 出力（Slack/Markdown）----
 function toSlackText(items){
-  const header = `*【PR朝刊 / 営業DX・AI・Enablement】${mdHeaderDate()}*`;
-  const lines = items.map(it=>{
-    const when = it.pubDate ? fmtJST(new Date(it.pubDate)) : '';
-    const title = truncate(it.title, 60).replace(/\n/g,' ');
-    const link = `<${it.link}|${title}>`;
-    return `• ${link}（${it.media}） — ${it.impact} _(${when})_`;
+  const header = `📰 *【PR朝刊 / 営業DX・AI・Enablement】${mdHeaderDate()}*`;
+  const lines = items.map(it => {
+    const when  = it.pubDate ? fmtJST(new Date(it.pubDate)) : '';
+    const title = truncate(escapeSlack(it.title), 32).replace(/\n/g,' ');
+    const media = escapeSlack(it.media || 'News');
+    const link  = `<${it.link}|${title}>`;
+    // 2行表示。最後はSlackで1メッセージにまとまるようコードブロックで返す
+    return `• ${link}（${media}）\n   └ ${escapeSlack(it.impact || '')} _(${when})_`;
   });
-  return [header, ...lines].join('\n');
+  // コードブロックで囲って丸ごとコピペOK（URLプレビューは出ません）
+  return [header, '```', ...lines, '```'].join('\n');
 }
 function toMarkdown(items){
   const lines = [
@@ -131,10 +140,10 @@ function toMarkdown(items){
   return lines.join('\n');
 }
 
-// ---------- メイン ----------
+// ---- メイン ----
 export default async function handler(req, res){
   try {
-    // 1) 収集
+    // 1) RSS収集
     const all = [];
     for (const url of APP_RSS_URLS) {
       try { all.push(...await fetchRSS(url)); } catch {}
@@ -167,20 +176,19 @@ export default async function handler(req, res){
       return { ...it, score:s };
     }).sort((a,b)=>b.score-a.score).slice(0, APP_MAX_ITEMS);
 
-    // 5) 一言 & 媒体名
+    // 5) 一言＆媒体名
     for (const it of ranked) {
       it.media = detectMedia(`${it.title} ${it.source||''} ${it.link}`);
       it.impact = await impactOneLiner(it.title, it.media, (it.summary||'').slice(0,300));
     }
 
-    // 6) 出力切替
+    // 6) 出力
     const useSlack = typeof req?.url === 'string' && req.url.includes('format=slack');
     const body = useSlack ? toSlackText(ranked) : toMarkdown(ranked);
 
-    // （任意）Slack自動送信
+    // 任意：Slack自動送信（/api/run を手で叩いたときだけ送る）
     if (!useSlack && SLACK_WEBHOOK && ranked.length){
-      const text = toSlackText(ranked);
-      try { await fetch(SLACK_WEBHOOK,{ method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ text }) }); } catch {}
+      try { await fetch(SLACK_WEBHOOK,{ method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ text: toSlackText(ranked) }) }); } catch {}
     }
 
     res.setHeader('Content-Type', (useSlack ? 'text/plain' : 'text/markdown') + '; charset=utf-8');
