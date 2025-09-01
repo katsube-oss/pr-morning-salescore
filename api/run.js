@@ -31,7 +31,6 @@ function normalizeTitle(t=''){ return t.replace(/\s+/g,'').replace(/[【】「�
 function parseDateAny(s){ if(!s) return null; const d=new Date(s); return isNaN(+d)?null:d; }
 function fmtJST(d){ const y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,'0'), da=String(d.getDate()).padStart(2,'0'), H=String(d.getHours()).padStart(2,'0'), M=String(d.getMinutes()).padStart(2,'0'); return `${y}/${m}/${da} ${H}:${M}`; }
 function mdHeaderDate(){ const {start}=jstYesterdayRange(); const y=start.getFullYear(), m=String(start.getMonth()+1).padStart(2,'0'), d=String(start.getDate()).padStart(2,'0'); return `${y}/${m}/${d}`; }
-function truncate(s = '', n = 0) { if (n <= 0) return s; return s.length > n ? s.slice(0, n - 1) + '…' : s; }
 function escapeSlack(s = '') { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\|/g,'／'); }
 
 function detectMedia(hay='') {
@@ -117,11 +116,12 @@ function toSlackText(items){
   const header = `📰 *【PR朝刊 / 営業DX・AI・Enablement】${mdHeaderDate()}*`;
   const lines = items.map(it => {
     const when  = it.pubDate ? fmtJST(new Date(it.pubDate)) : '';
-    const title = truncate(escapeSlack(it.title), 0).replace(/\n/g,' '); // 0=省略なし
+    const title = escapeSlack(it.title).replace(/\n/g,' ');
     const media = escapeSlack(it.media || 'News');
-    const link  = `<${it.link}|${title}>`;
+    const link  = `<${it.link}|${title}>`; // Slackリンク表記
     return `• ${link}（${media}）\n   └ ${escapeSlack(it.impact || '')} _(${when})_`;
   });
+  // コードブロックは使わない → Slackがリンクを展開してくれる
   return [header, ...lines].join('\n');
 }
 function toMarkdown(items){
