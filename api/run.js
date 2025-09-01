@@ -150,26 +150,46 @@ export default async function handler(req, res){
       it.media = src;
     }
 
-    // 6) Markdownに整形
-    const lines = [
-      `# PR朝刊（営業DX/AI/Enablement）${mdHeaderDate()}`,
-      ...scored.map(it=>{
-        const when = it.pubDate ? fmtJST(new Date(it.pubDate)) : '';
-        return `- ${it.title}（${it.media}） ${it.link} — ${it.impact} _(${when})_`;
-      })
-    ];
-    const md = lines.join('\n');
+    // 6) 出力整形（Slack/Markdown両対応）
+function truncate(s = '', n = 60) { return s.length > n ? s.slice(0, n - 1) + '…' : s; }
+function mdHeaderDate(){ const {start}=jstYesterdayRange(); const y=start.getFullYear(), m=String(start.getMonth()+1).padStart(2,'0'), d=String(start.getDate()).padStart(2,'0'); return `${y}/${m}/${d}`; }
+function fmtJST(d){ const y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,'0'), da=String(d.getDate()).padStart(2,'0'), H=String(d.getHours()).padStart(2,'0'), M=String(d.getMinutes()).padStart(2,'0'); return `${y}/${m}/${da} ${H}:${M}`; }
 
-    // （任意）Slack Webhook
-    if (SLACK_WEBHOOK && scored.length) {
-      const text = ['【PR朝刊】'+mdHeaderDate(), ...scored.map(it=>`• ${it.title}（${it.media}） ${it.link} — ${it.impact}`)].join('\n');
-      try {
-        await fetch(SLACK_WEBHOOK, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ text }) });
-      } catch {}
-    }
+// Slack用：<URL|タイトル> 形式で1行に凝縮。太字・絵文字で視認性UP
+function toSlackText(items){
+  const header = `*【PR朝刊 / 営業DX・AI・Enablement】${mdHeaderDate()}*`;
+  const lines = items.map(it => {
+    const when = it.pubDate ? fmtJST(new Date(it.pubDate)) : '';
+    const title = truncate(it.title, 60).replace(/\n/g,' ');
+    // Slackリンク: <url|text>
+    const link = `<${it.link}|${title}>`;
+    return `• ${link}（${it.media}） — ${it.impact} _(${when})_`;
+  });
+  return [header, ...lines].join('\n');
+}
 
-    res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
-    res.status(200).send(md);
+// Markdown（従来の見た目）
+function toMarkdown(items){
+  const lines = [
+    `# PR朝刊（営業DX/AI/Enablement）${mdHeaderDate()}`,
+    ...items.map(it=>{
+      const when = it.pubDate ? fmtJST(new Date(it.pubDate)) : '';
+      return `- ${it.title}（${it.media}） ${it.link} — ${it.impact} _(${when})_`;
+    })
+  ];
+  return lines.join('\n');
+}
+
+export default async function handler(req, res){
+  try{
+    // ……ここは既存の処理（RSS収集→filtered→uniq→scored→impact生成）をそのまま残す……
+    // 直前までの変数: scored（= 出力対象の配列。各要素に {title, link, media, impact, pubDate} が入っている）
+
+    const useSlack = (req?.url && req.url.includes('format=slack'));
+    const body = useSlack ? toSlackText(scored) : toMarkdown(scored);
+
+    res.setHeader('Content-Type', (useSlack ? 'text/plain' : 'text/markdown') + '; charset=utf-8');
+    res.status(200).send(body);
   } catch(e){
     res.status(500).send('Internal Error');
   }
